@@ -33,15 +33,9 @@ def guess_delim(line: str):
 
 
 class AccountsPool:
-    # _order_by: str = "RANDOM()"
-    _order_by: str = "username"
+    _order_by: str = "lock_time, username"
 
-    def __init__(
-        self,
-        db_file="accounts.db",
-        login_config: LoginConfig | None = None,
-        raise_when_no_account=False,
-    ):
+    def __init__(self, db_file="accounts.db", login_config: LoginConfig | None = None, raise_when_no_account=False):
         self._db_file = db_file
         self._login_config = login_config or LoginConfig()
         self._raise_when_no_account = raise_when_no_account
@@ -102,7 +96,6 @@ class AccountsPool:
             proxy=proxy,
             mfa_code=mfa_code,
         )
-
         if "ct0" in account.cookies:
             account.active = True
 
@@ -118,7 +111,6 @@ class AccountsPool:
 
         qs = f"""DELETE FROM accounts WHERE username IN ({','.join([f'"{x}"' for x in usernames])})"""
         await execute(self._db_file, qs)
-
     async def delete_inactive(self):
         qs = "DELETE FROM accounts WHERE active = false"
         await execute(self._db_file, qs)
@@ -176,7 +168,6 @@ class AccountsPool:
 
         rs = await fetchall(self._db_file, qs)
         accounts = [Account.from_rs(rs) for rs in rs]
-        # await asyncio.gather(*[login(x) for x in self.accounts])
 
         counter = {"total": len(accounts), "success": 0, "failed": 0}
         for i, x in enumerate(accounts, start=1):
@@ -203,7 +194,6 @@ class AccountsPool:
             user_agent = "{UserAgent().safari}"
         WHERE username IN ({','.join([f'"{x}"' for x in usernames])})
         """
-
         await execute(self._db_file, qs)
         await self.login_all(usernames)
 
@@ -219,16 +209,17 @@ class AccountsPool:
     async def set_active(self, username: str, active: bool):
         qs = "UPDATE accounts SET active = :active WHERE username = :username"
         await execute(self._db_file, qs, {"username": username, "active": active})
-
     async def lock_until(self, username: str, queue: str, unlock_at: int, req_count=0):
+        lock_time = datetime.now(timezone.utc).isoformat()  # زمان فعلی با توجه به منطقه زمانی
         qs = f"""
         UPDATE accounts SET
             locks = json_set(locks, '$.{queue}', datetime({unlock_at}, 'unixepoch')),
             stats = json_set(stats, '$.{queue}', COALESCE(json_extract(stats, '$.{queue}'), 0) + {req_count}),
-            last_used = datetime({utc.ts()}, 'unixepoch')
+            last_used = datetime({utc.ts()}, 'unixepoch'),
+            lock_time = :lock_time
         WHERE username = :username
         """
-        await execute(self._db_file, qs, {"username": username})
+        await execute(self._db_file, qs, {"username": username, "lock_time": lock_time})
 
     async def unlock(self, username: str, queue: str, req_count=0):
         qs = f"""
@@ -248,7 +239,8 @@ class AccountsPool:
             qs = f"""
             UPDATE accounts SET
                 locks = json_set(locks, '$.{queue}', datetime('now', '+15 minutes')),
-                last_used = datetime({utc.ts()}, 'unixepoch')
+                last_used = datetime({utc.ts()}, 'unixepoch'),
+                lock_time = datetime('now')
             WHERE username = {condition}
             RETURNING *
             """
@@ -259,7 +251,8 @@ class AccountsPool:
             UPDATE accounts SET
                 locks = json_set(locks, '$.{queue}', datetime('now', '+15 minutes')),
                 last_used = datetime({utc.ts()}, 'unixepoch'),
-                _tx = '{tx}'
+                _tx = '{tx}',
+                lock_time = datetime('now')
             WHERE username = {condition}
             """
             await execute(self._db_file, qs)
@@ -381,5 +374,4 @@ class AccountsPool:
             reverse=True,
         )
         items = sorted(items, key=lambda x: x["active"], reverse=True)
-        # items = sorted(items, key=lambda x: x["total_req"], reverse=True)
         return items
